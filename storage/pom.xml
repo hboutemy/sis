@@ -175,6 +175,7 @@
     <module>sis-netcdf</module>
     <module>sis-geotiff</module>
     <module>sis-earth-observation</module>
+    <module>sis-coveragejson</module>
   </modules>
 
 </project>

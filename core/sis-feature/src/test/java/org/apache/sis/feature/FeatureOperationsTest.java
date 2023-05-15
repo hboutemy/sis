@@ -33,7 +33,10 @@ import org.apache.sis.test.DependsOn;
 import org.apache.sis.test.TestCase;
 import org.junit.Test;
 
-import static org.apache.sis.test.ReferencingAssert.*;
+import static org.junit.Assert.*;
+import static org.opengis.test.Assert.assertInstanceOf;
+import static org.apache.sis.test.Assertions.assertSetEquals;
+import static org.apache.sis.referencing.Assertions.assertEnvelopeEquals;
 
 // Branch-dependent imports
 import org.opengis.feature.PropertyType;
@@ -42,7 +45,7 @@ import org.opengis.feature.PropertyType;
 /**
  * Tests a feature combining various {@link FeatureOperations} applied of either sparse or dense features.
  * This is an integration test. For tests specific to a particular operation, see for example
- * {@link LinkOperation} or {@link EnvelopeOperation}.
+ * {@link LinkOperationTest} or {@link EnvelopeOperationTest}.
  *
  * @author  Johann Sorel (Geomatys)
  * @author  Martin Desruisseaux (Geomatys)

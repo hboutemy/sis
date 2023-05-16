@@ -64,7 +64,7 @@ public class CoverageJsonStore extends DataStore implements WritableAggregate {
      */
     private final Path path;
 
-    private boolean parsed = false;
+    private boolean parsed;
     private final List<Resource> components = new ArrayList<>();
 
     CoverageJsonStore(CoverageJsonStoreProvider provider, StorageConnector connector) throws DataStoreException {
@@ -90,8 +90,8 @@ public class CoverageJsonStore extends DataStore implements WritableAggregate {
         if (!parsed) {
             parsed = true;
             if (Files.exists(path)) {
-                try (final Jsonb b = JsonbBuilder.create();
-                     final InputStream in = new BufferedInputStream(Files.newInputStream(path))) {
+                try (Jsonb b = JsonbBuilder.create();
+                     InputStream in = new BufferedInputStream(Files.newInputStream(path))) {
                     final CoverageJsonObject obj = b.fromJson(in, CoverageJsonObject.class);
 
                     if (obj instanceof Coverage) {

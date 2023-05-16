@@ -50,6 +50,6 @@ import jakarta.json.bind.annotation.JsonbTypeInfo;
     @JsonbSubtype(alias = "VerticalCRS", type = VerticalCRS.class),
     @JsonbSubtype(alias = "TemporalRS", type = TemporalRS.class)
 })
-public class CoverageJsonObject extends Dictionary<Object>{
+public class CoverageJsonObject extends Dictionary<Object> {
 
 }

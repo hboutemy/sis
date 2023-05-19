@@ -18,6 +18,7 @@ package org.apache.sis.internal.coveragejson;
 
 import java.awt.image.DataBuffer;
 import java.awt.image.DataBufferDouble;
+import java.awt.image.RenderedImage;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
@@ -25,10 +26,12 @@ import java.time.format.DateTimeParseException;
 import java.time.format.SignStyle;
 import java.time.temporal.ChronoField;
 import java.time.temporal.TemporalAccessor;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -40,6 +43,7 @@ import org.apache.sis.coverage.grid.GridCoverage;
 import org.apache.sis.coverage.grid.GridExtent;
 import org.apache.sis.coverage.grid.GridGeometry;
 import org.apache.sis.coverage.grid.GridRoundingMode;
+import org.apache.sis.image.PixelIterator;
 import org.apache.sis.internal.coveragejson.binding.Axe;
 import org.apache.sis.internal.coveragejson.binding.Axes;
 import org.apache.sis.internal.coveragejson.binding.Coverage;
@@ -49,24 +53,30 @@ import org.apache.sis.internal.coveragejson.binding.GeographicCRS;
 import org.apache.sis.internal.coveragejson.binding.IdentifierRS;
 import org.apache.sis.internal.coveragejson.binding.NdArray;
 import org.apache.sis.internal.coveragejson.binding.Parameter;
+import org.apache.sis.internal.coveragejson.binding.Parameters;
 import org.apache.sis.internal.coveragejson.binding.ProjectedCRS;
+import org.apache.sis.internal.coveragejson.binding.Ranges;
 import org.apache.sis.internal.coveragejson.binding.ReferenceSystemConnection;
 import org.apache.sis.internal.coveragejson.binding.TemporalRS;
 import org.apache.sis.internal.coveragejson.binding.VerticalCRS;
 import org.apache.sis.measure.Units;
 import org.apache.sis.referencing.CRS;
 import org.apache.sis.referencing.CommonCRS;
+import org.apache.sis.referencing.IdentifiedObjects;
 import org.apache.sis.referencing.operation.matrix.Matrices;
 import org.apache.sis.referencing.operation.matrix.MatrixSIS;
+import org.apache.sis.referencing.operation.transform.LinearTransform;
 import org.apache.sis.referencing.operation.transform.MathTransforms;
 import org.apache.sis.storage.AbstractGridCoverageResource;
 import org.apache.sis.storage.DataStoreException;
 import org.apache.sis.storage.NoSuchDataException;
+import org.opengis.coverage.grid.SequenceType;
 import org.opengis.metadata.spatial.DimensionNameType;
 import org.opengis.referencing.crs.CoordinateReferenceSystem;
 import org.opengis.referencing.datum.PixelInCell;
 import org.opengis.referencing.operation.MathTransform;
 import org.opengis.referencing.operation.MathTransform1D;
+import org.opengis.referencing.operation.Matrix;
 import org.opengis.util.FactoryException;
 
 /**
@@ -128,6 +138,13 @@ final class CoverageResource extends AbstractGridCoverageResource {
         for (Entry<String,NdArray> entry : binding.ranges.any.entrySet()) {
             datas.put(entry.getKey(), jsonToDataBuffer(entry.getValue()));
         }
+    }
+
+    /**
+     * Return the JSON coverage binding.
+     */
+    Coverage getBinding() {
+        return binding;
     }
 
     @Override
@@ -453,5 +470,194 @@ final class CoverageResource extends AbstractGridCoverageResource {
             }
         }
         throw new DataStoreException("Unable to parse date : " + str);
+    }
+
+    public static Coverage gridCoverageToBinding(GridCoverage coverage) throws DataStoreException {
+        final Coverage binding = new Coverage();
+
+        try {
+            //build domain
+            binding.domain = gridGeometryToJson(coverage.getGridGeometry());
+        } catch (FactoryException ex) {
+            throw new DataStoreException(ex.getMessage(), ex);
+        }
+
+        //build parameters
+        binding.parameters = new Parameters();
+        for (SampleDimension sd : coverage.getSampleDimensions()) {
+            final Entry<String, Parameter> entry = sampleDimensionToJson(sd);
+            binding.parameters.setAnyProperty(entry.getKey(), entry.getValue());
+        }
+
+        //build datas
+        binding.ranges = new Ranges();
+        binding.ranges.any.putAll(imageToJson(coverage, new ArrayList(binding.parameters.any.keySet())));
+
+        return binding;
+    }
+
+    private static Domain gridGeometryToJson(GridGeometry gridGeometry) throws DataStoreException, FactoryException {
+        final Domain binding = new Domain();
+        binding.domainType = Domain.DOMAINTYPE_GRID;
+        binding.referencing = new ArrayList<>();
+        binding.axes = new Axes();
+
+        final GridExtent extent = gridGeometry.getExtent();
+        final MathTransform gridToCrs = gridGeometry.getGridToCRS(PixelInCell.CELL_CENTER);
+        final int dimension = gridGeometry.getDimension();
+
+        final long[] gridLow = extent.getLow().getCoordinateValues();
+        final int[] gridSize = new int[dimension];
+        final List<Integer> gridToCrsIndex = new ArrayList<>(dimension);
+        final double[] scales = new double[dimension];
+        final double[] offsets = new double[dimension];
+        if (gridToCrs instanceof LinearTransform) {
+            final Matrix matrix = ((LinearTransform)gridToCrs).getMatrix();
+            search:
+            for (int i = 0; i < dimension; i++) {
+                //find scale column
+                for (int c = 0; c < dimension; c++) {
+                    double d = matrix.getElement(i, c);
+                    if (d != 0.0) {
+                        gridToCrsIndex.add(c);
+                        gridSize[i] = Math.toIntExact(extent.getSize(i));
+                        scales[i] = d;
+                        offsets[i] = matrix.getElement(i, dimension);
+                    }
+                    continue search;
+                }
+                throw new DataStoreException("An axe in the Grid to CRS transform has no scale value");
+            }
+        } else {
+            //todo handle cases of compound transforms, would allow us to handle no linear 1D axes.
+            throw new DataStoreException("Coveragejson only support linear grid to CRS transform without rotation or shearing");
+        }
+
+        final CoordinateReferenceSystem crs = gridGeometry.getCoordinateReferenceSystem();
+        int crsIdx = 0;
+        for (CoordinateReferenceSystem scrs : CRS.getSingleComponents(crs)) {
+            final int gridIdx = gridToCrsIndex.get(crsIdx);
+            //coverage-json expect us to order x/y in longitude/latitude order
+            if (scrs instanceof org.opengis.referencing.crs.GeographicCRS) {
+                final org.opengis.referencing.crs.GeographicCRS gcrs = (org.opengis.referencing.crs.GeographicCRS) scrs;
+                final GeographicCRS grs = new GeographicCRS();
+                grs.id = toURI(gcrs);
+                final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
+                rsc.coordinates = Arrays.asList("x", "y");
+                rsc.system = grs;
+                binding.referencing.add(rsc);
+
+                crsIdx +=2;
+            } else if (scrs instanceof org.opengis.referencing.crs.ProjectedCRS) {
+                final org.opengis.referencing.crs.ProjectedCRS pcrs = (org.opengis.referencing.crs.ProjectedCRS) scrs;
+                final ProjectedCRS grs = new ProjectedCRS();
+                grs.id = toURI(pcrs);
+                final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
+                rsc.coordinates = Arrays.asList("x", "y");
+                rsc.system = grs;
+                binding.referencing.add(rsc);
+
+
+                crsIdx +=2;
+            } else if (scrs instanceof org.opengis.referencing.crs.VerticalCRS) {
+                final org.opengis.referencing.crs.VerticalCRS vcrs = (org.opengis.referencing.crs.VerticalCRS) scrs;
+
+                if (CommonCRS.Vertical.ELLIPSOIDAL.crs().equals(vcrs)) {
+                    final VerticalCRS vrs = new VerticalCRS();
+                    final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
+                    rsc.coordinates = Arrays.asList("z");
+                    rsc.system = vrs;
+                    binding.referencing.add(rsc);
+                    binding.axes.z = buildAxe(gridLow[gridIdx], gridSize[gridIdx], scales[gridIdx], offsets[gridIdx], false);
+                } else {
+                    throw new DataStoreException("A temporal reference system could not be mapped to CoverageJSON\n" + scrs.toString());
+                }
+
+                crsIdx++;
+            } else if (scrs instanceof org.opengis.referencing.crs.TemporalCRS) {
+                final org.opengis.referencing.crs.TemporalCRS tcrs = (org.opengis.referencing.crs.TemporalCRS) scrs;
+
+                if (CommonCRS.Temporal.JAVA.crs().equals(tcrs)) {
+                    final TemporalRS trs = new TemporalRS();
+                    trs.calendar = "Gregorian";
+                    final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
+                    rsc.coordinates = Arrays.asList("t");
+                    rsc.system = trs;
+                    binding.referencing.add(rsc);
+                    binding.axes.t = buildAxe(gridLow[gridIdx], gridSize[gridIdx], scales[gridIdx], offsets[gridIdx], true);
+                } else {
+                    throw new DataStoreException("A temporal reference system could not be mapped to CoverageJSON\n" + scrs.toString());
+                }
+
+                crsIdx++;
+            } else {
+                throw new DataStoreException("A coordinate reference system could not be mapped to CoverageJSON\n" + scrs.toString());
+            }
+        }
+
+        return binding;
+    }
+
+    private static Entry<String,Parameter> sampleDimensionToJson(SampleDimension sd) {
+        final Parameter binding = new Parameter();
+        final String name = sd.getName().toString();
+        binding.id = name;
+        //TODO convert categories, units,... we might need a database of observed properties
+        return new AbstractMap.SimpleImmutableEntry<>(name, binding);
+    }
+
+    private static Map<String,NdArray> imageToJson(GridCoverage coverage, List<String> properties) throws DataStoreException {
+        if (coverage.getGridGeometry().getDimension() != 2) {
+            throw new DataStoreException("Only Grid coverage 2D supported as this time");
+        }
+
+        final RenderedImage image = coverage.render(null);
+        final PixelIterator ite = new PixelIterator.Builder().setIteratorOrder(SequenceType.LINEAR).create(image);
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+
+        final int nbSample = properties.size();
+        final double[] pixel = new double[nbSample];
+        final NdArray[] arrays = new NdArray[nbSample];
+        final Map<String,NdArray> map = new LinkedHashMap<>();
+        for (int i = 0; i < nbSample; i++) {
+            arrays[i] = new NdArray();
+            arrays[i].dataType = NdArray.DATATYPE_FLOAT;
+            arrays[i].shape = new int[]{width, height};
+            arrays[i].axisNames = new String[]{"y","x"};
+            arrays[i].values = new ArrayList<>();
+            map.put(properties.get(i), arrays[i]);
+        }
+
+        while (ite.next()) {
+            ite.getPixel(pixel);
+            for (int i = 0; i < nbSample; i++) {
+                arrays[i].values.add(pixel[i]);
+            }
+        }
+
+        return map;
+    }
+
+    private static Axe buildAxe(long gridLow, int gridSize, double scale, double offset, boolean asDate) {
+        final Axe axe = new Axe();
+        if (asDate) {
+            axe.values = new ArrayList<>(gridSize);
+            for (int i = 0; i < gridSize; i++) {
+                Instant ofEpochMilli = Instant.ofEpochMilli((long) ((gridLow+i)*scale + offset));
+                axe.values.add(DATE_TIME.format(ofEpochMilli));
+            }
+        } else {
+            axe.num = gridSize;
+            axe.start = gridLow*scale + offset;
+            axe.stop = (gridLow+gridSize-1) * scale + offset;
+        }
+        return axe;
+    }
+
+    private static String toURI(CoordinateReferenceSystem crs) throws FactoryException, DataStoreException {
+        final Integer code = IdentifiedObjects.lookupEPSG(crs);
+        if (code == null) throw new DataStoreException("Could not find EPSG code for CRS " + crs);
+        return "http://www.opengis.net/def/crs/EPSG/0/" + code;
     }
 }

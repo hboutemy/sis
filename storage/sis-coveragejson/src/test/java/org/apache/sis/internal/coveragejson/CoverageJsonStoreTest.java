@@ -17,17 +17,28 @@
 package org.apache.sis.internal.coveragejson;
 
 import jakarta.json.bind.JsonbBuilder;
+import java.awt.image.BufferedImage;
 import java.awt.image.Raster;
+import java.awt.image.WritableRaster;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.apache.sis.coverage.grid.GridCoverage;
+import org.apache.sis.coverage.grid.GridCoverageBuilder;
 import org.apache.sis.coverage.grid.GridExtent;
 import org.apache.sis.coverage.grid.GridGeometry;
+import org.apache.sis.coverage.grid.GridOrientation;
+import org.apache.sis.internal.storage.MemoryGridResource;
 import org.apache.sis.referencing.CRS;
 import org.apache.sis.referencing.CommonCRS;
 import org.apache.sis.storage.Aggregate;
 import org.apache.sis.storage.DataStore;
+import org.apache.sis.storage.DataStoreException;
 import org.apache.sis.storage.GridCoverageResource;
 import org.apache.sis.storage.Resource;
 import org.apache.sis.storage.StorageConnector;
+import org.apache.sis.storage.WritableAggregate;
 import org.apache.sis.test.TestCase;
 import org.eclipse.yasson.internal.JsonBindingBuilder;
 import org.junit.Assert;
@@ -44,7 +55,7 @@ public class CoverageJsonStoreTest extends TestCase {
      * Test coverage example from https://covjson.org/playground/.
      */
     @Test
-    public void testCoverageXYZT() throws Exception {
+    public void testReadCoverageXYZT() throws Exception {
 
         try (final DataStore store = new CoverageJsonStoreProvider().open(new StorageConnector(CoverageJsonStoreTest.class.getResource("coverage_xyzt.json")))) {
 
@@ -78,9 +89,63 @@ public class CoverageJsonStoreTest extends TestCase {
             {   //test data
                 GridCoverage coverage = gcr.read(null);
                 Raster data = coverage.render(null).getData();
+                Assert.assertEquals(0.5, data.getSampleDouble(0, 0, 0), 0.0);
+                Assert.assertEquals(0.6, data.getSampleDouble(1, 0, 0), 0.0);
+                Assert.assertEquals(0.4, data.getSampleDouble(2, 0, 0), 0.0);
+                Assert.assertEquals(0.6, data.getSampleDouble(0, 1, 0), 0.0);
+                Assert.assertEquals(0.2, data.getSampleDouble(1, 1, 0), 0.0);
+                Assert.assertEquals(Double.NaN, data.getSampleDouble(2, 1, 0), 0.0);
             }
         }
 
+    }
+
+    /**
+     * Test writing most simple 2D Grid coverage.
+     */
+    @Test
+    public void testWriteCoverageXY() throws IOException, DataStoreException {
+
+        final Path tempPath = Files.createTempFile("test", ".covjson");
+        Files.delete(tempPath);
+
+        try (final DataStore store = new CoverageJsonStoreProvider().open(new StorageConnector(tempPath))) {
+
+            //test grid coverage resource exist
+            Assert.assertTrue(store instanceof WritableAggregate);
+            final WritableAggregate aggregate = (WritableAggregate) store;
+            Assert.assertEquals(0, aggregate.components().size());
+
+            //write a grid coverage
+            final GridGeometry grid = new GridGeometry(new GridExtent(4,2), CRS.getDomainOfValidity(CommonCRS.WGS84.normalizedGeographic()), GridOrientation.REFLECTION_Y);
+            final BufferedImage image = new BufferedImage(4, 2, BufferedImage.TYPE_BYTE_GRAY);
+            final WritableRaster raster = image.getRaster();
+            raster.setSample(0, 0, 0, 1);
+            raster.setSample(1, 0, 0, 2);
+            raster.setSample(2, 0, 0, 3);
+            raster.setSample(3, 0, 0, 4);
+            raster.setSample(0, 1, 0, 5);
+            raster.setSample(1, 1, 0, 6);
+            raster.setSample(2, 1, 0, 7);
+            raster.setSample(3, 1, 0, 8);
+
+
+            final GridCoverageBuilder gcb = new GridCoverageBuilder();
+            gcb.setDomain(grid);
+            gcb.setValues(image);
+            final GridCoverage coverage = gcb.build();
+
+            final GridCoverageResource gcr = new MemoryGridResource(null, coverage, null);
+
+            aggregate.add(gcr);
+
+
+            String json = Files.readString(tempPath, StandardCharsets.UTF_8);
+            System.out.println(json);
+
+        } finally {
+            Files.deleteIfExists(tempPath);
+        }
     }
 
 }

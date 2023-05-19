@@ -18,9 +18,12 @@ package org.apache.sis.internal.coveragejson;
 
 import jakarta.json.bind.Jsonb;
 import jakarta.json.bind.JsonbBuilder;
+import jakarta.json.bind.JsonbConfig;
 import java.io.BufferedInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -28,6 +31,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import org.apache.sis.coverage.grid.GridCoverage;
 import org.apache.sis.internal.coveragejson.binding.Coverage;
 import org.apache.sis.internal.coveragejson.binding.CoverageCollection;
 import org.apache.sis.internal.coveragejson.binding.CoverageJsonObject;
@@ -36,6 +40,8 @@ import org.apache.sis.internal.storage.URIDataStore;
 import org.apache.sis.internal.storage.io.IOUtilities;
 import org.apache.sis.storage.DataStore;
 import org.apache.sis.storage.DataStoreException;
+import org.apache.sis.storage.GridCoverageResource;
+import org.apache.sis.storage.NoSuchDataException;
 import org.apache.sis.storage.Resource;
 import org.apache.sis.storage.StorageConnector;
 import org.apache.sis.storage.WritableAggregate;
@@ -99,6 +105,7 @@ public class CoverageJsonStore extends DataStore implements WritableAggregate {
                         components.add(new CoverageResource(this, coverage));
 
                     } else if (obj instanceof CoverageCollection) {
+                        final CoverageCollection col = (CoverageCollection) obj;
                         throw new UnsupportedOperationException("Coverage collection not supported yet.");
                     }
 
@@ -111,15 +118,74 @@ public class CoverageJsonStore extends DataStore implements WritableAggregate {
         return Collections.unmodifiableList(components);
     }
 
-
     @Override
-    public Resource add(Resource resource) throws DataStoreException {
-        throw new UnsupportedOperationException("Not supported yet.");
+    public synchronized Resource add(Resource resource) throws DataStoreException {
+        //ensure file is parsed
+        components();
+
+        if (resource instanceof GridCoverageResource) {
+            final GridCoverageResource gcr = (GridCoverageResource) resource;
+            final GridCoverage coverage = gcr.read(null);
+            final Coverage binding = CoverageResource.gridCoverageToBinding(coverage);
+            final CoverageResource jcr = new CoverageResource(this, binding);
+            components.add(jcr);
+            save();
+            return jcr;
+        }
+
+        throw new DataStoreException("Only GridCoverage resource are supported");
     }
 
     @Override
-    public void remove(Resource resource) throws DataStoreException {
-        throw new UnsupportedOperationException("Not supported yet.");
+    public synchronized void remove(Resource resource) throws DataStoreException {
+        //ensure file is parsed
+        components();
+
+        for (int i = 0, n = components.size(); i < n ;i++) {
+            if (components.get(i) == resource) {
+                components.remove(i);
+                save();
+                return;
+            }
+        }
+        throw new NoSuchDataException();
+    }
+
+    private synchronized void save() throws DataStoreException {
+        //ensure file is parsed
+        components();
+
+        final int size = components.size();
+        final String json;
+        if (size == 1) {
+            //single coverage
+            final CoverageResource res = (CoverageResource) components.get(0);
+
+            try (Jsonb jsonb = JsonbBuilder.create(new JsonbConfig().withFormatting(true))) {
+                json = jsonb.toJson(res.getBinding());
+            } catch (Exception ex) {
+                throw new DataStoreException("Failed to create coverage json binding", ex);
+            }
+        } else {
+            final CoverageCollection col = new CoverageCollection();
+            col.coverages = new ArrayList<>();
+            for (int i = 0; i < size; i++) {
+                final CoverageResource res = (CoverageResource) components.get(i);
+                col.coverages.add(res.getBinding());
+            }
+
+            try (Jsonb jsonb = JsonbBuilder.create(new JsonbConfig().withFormatting(true))) {
+                json = jsonb.toJson(col);
+            } catch (Exception ex) {
+                throw new DataStoreException("Failed to create coverage collection json binding", ex);
+            }
+        }
+
+        try {
+            Files.write(path, json.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ex) {
+            throw new DataStoreException("Failed to save coverage-json", ex);
+        }
     }
 
     @Override

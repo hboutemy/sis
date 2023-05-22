@@ -46,12 +46,15 @@ import org.apache.sis.coverage.grid.GridRoundingMode;
 import org.apache.sis.image.PixelIterator;
 import org.apache.sis.internal.coveragejson.binding.Axe;
 import org.apache.sis.internal.coveragejson.binding.Axes;
+import org.apache.sis.internal.coveragejson.binding.Category;
+import org.apache.sis.internal.coveragejson.binding.CategoryEncoding;
 import org.apache.sis.internal.coveragejson.binding.Coverage;
 import org.apache.sis.internal.coveragejson.binding.CoverageJsonObject;
 import org.apache.sis.internal.coveragejson.binding.Domain;
 import org.apache.sis.internal.coveragejson.binding.GeographicCRS;
 import org.apache.sis.internal.coveragejson.binding.IdentifierRS;
 import org.apache.sis.internal.coveragejson.binding.NdArray;
+import org.apache.sis.internal.coveragejson.binding.ObservedProperty;
 import org.apache.sis.internal.coveragejson.binding.Parameter;
 import org.apache.sis.internal.coveragejson.binding.Parameters;
 import org.apache.sis.internal.coveragejson.binding.ProjectedCRS;
@@ -59,6 +62,7 @@ import org.apache.sis.internal.coveragejson.binding.Ranges;
 import org.apache.sis.internal.coveragejson.binding.ReferenceSystemConnection;
 import org.apache.sis.internal.coveragejson.binding.TemporalRS;
 import org.apache.sis.internal.coveragejson.binding.VerticalCRS;
+import org.apache.sis.measure.NumberRange;
 import org.apache.sis.measure.Units;
 import org.apache.sis.referencing.CRS;
 import org.apache.sis.referencing.CommonCRS;
@@ -83,7 +87,7 @@ import org.opengis.util.FactoryException;
  *
  * @author Johann Sorel (Geomatys)
  */
-final class CoverageResource extends AbstractGridCoverageResource {
+public final class CoverageResource extends AbstractGridCoverageResource {
 
     private static final DateTimeFormatter YEAR = new DateTimeFormatterBuilder()
                 .appendValue(ChronoField.YEAR, 1, 19, SignStyle.EXCEEDS_PAD)
@@ -353,7 +357,14 @@ final class CoverageResource extends AbstractGridCoverageResource {
                 }
                 return CRS.forCode(jcrs.id);
             } else {
-                throw new UnsupportedOperationException("Geographic CRS wihout id not supported");
+                /* Spec 9.5.1.1
+                Note that sometimes (e.g. for numerical model data) the exact CRS
+                may not be known or may be undefined. In this case the "id" may
+                be omitted, but the "type" still indicates that this is a geographic CRS.
+                Therefore clients can still use geodetic longitude, geodetic latitude
+                (and maybe height) axes, even if they cannot accurately georeference the information.
+                */
+                return CommonCRS.WGS84.normalizedGeographic();
             }
         } else if (obj instanceof ProjectedCRS) {
             final ProjectedCRS jcrs = (ProjectedCRS) obj;
@@ -523,8 +534,8 @@ final class CoverageResource extends AbstractGridCoverageResource {
                         gridSize[i] = Math.toIntExact(extent.getSize(i));
                         scales[i] = d;
                         offsets[i] = matrix.getElement(i, dimension);
+                        continue search;
                     }
-                    continue search;
                 }
                 throw new DataStoreException("An axe in the Grid to CRS transform has no scale value");
             }
@@ -540,23 +551,28 @@ final class CoverageResource extends AbstractGridCoverageResource {
             //coverage-json expect us to order x/y in longitude/latitude order
             if (scrs instanceof org.opengis.referencing.crs.GeographicCRS) {
                 final org.opengis.referencing.crs.GeographicCRS gcrs = (org.opengis.referencing.crs.GeographicCRS) scrs;
+                final int gridIdx2 = gridToCrsIndex.get(crsIdx+1);
                 final GeographicCRS grs = new GeographicCRS();
                 grs.id = toURI(gcrs);
                 final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
                 rsc.coordinates = Arrays.asList("x", "y");
                 rsc.system = grs;
                 binding.referencing.add(rsc);
+                binding.axes.x = buildAxe(gridLow[gridIdx], gridSize[gridIdx], scales[gridIdx], offsets[gridIdx], false);
+                binding.axes.y = buildAxe(gridLow[gridIdx2], gridSize[gridIdx2], scales[gridIdx2], offsets[gridIdx2], false);
 
                 crsIdx +=2;
             } else if (scrs instanceof org.opengis.referencing.crs.ProjectedCRS) {
                 final org.opengis.referencing.crs.ProjectedCRS pcrs = (org.opengis.referencing.crs.ProjectedCRS) scrs;
+                final int gridIdx2 = gridToCrsIndex.get(crsIdx+1);
                 final ProjectedCRS grs = new ProjectedCRS();
                 grs.id = toURI(pcrs);
                 final ReferenceSystemConnection rsc = new ReferenceSystemConnection();
                 rsc.coordinates = Arrays.asList("x", "y");
                 rsc.system = grs;
                 binding.referencing.add(rsc);
-
+                binding.axes.x = buildAxe(gridLow[gridIdx], gridSize[gridIdx], scales[gridIdx], offsets[gridIdx], false);
+                binding.axes.y = buildAxe(gridLow[gridIdx2], gridSize[gridIdx2], scales[gridIdx2], offsets[gridIdx2], false);
 
                 crsIdx +=2;
             } else if (scrs instanceof org.opengis.referencing.crs.VerticalCRS) {
@@ -602,6 +618,34 @@ final class CoverageResource extends AbstractGridCoverageResource {
         final Parameter binding = new Parameter();
         final String name = sd.getName().toString();
         binding.id = name;
+
+        final List<org.apache.sis.coverage.Category> categories = sd.getCategories();
+        if (categories != null && !categories.isEmpty()) {
+
+            final ObservedProperty obs = new ObservedProperty();
+            obs.id = name;
+            obs.categories = new ArrayList<>();
+            binding.observedProperty = obs;
+
+            final CategoryEncoding catEnc = new CategoryEncoding();
+            binding.categoryEncoding = catEnc;
+            for (org.apache.sis.coverage.Category cat : sd.getCategories()) {
+                final Category catb = new Category();
+                catb.id = cat.getName().toString();
+                obs.categories.add(catb);
+
+                final NumberRange<?> range = cat.getSampleRange();
+                final double min = range.getMinDouble();
+                final double max = range.getMaxDouble(false);
+                final List<Integer> values = new ArrayList<>();
+                for (double i = min; i < max; i++) {
+                    values.add((int) i);
+                }
+                catEnc.any.put(catb.id, values);
+            }
+        }
+
+
         //TODO convert categories, units,... we might need a database of observed properties
         return new AbstractMap.SimpleImmutableEntry<>(name, binding);
     }
@@ -657,7 +701,19 @@ final class CoverageResource extends AbstractGridCoverageResource {
 
     private static String toURI(CoordinateReferenceSystem crs) throws FactoryException, DataStoreException {
         final Integer code = IdentifiedObjects.lookupEPSG(crs);
-        if (code == null) throw new DataStoreException("Could not find EPSG code for CRS " + crs);
+        if (code == null) {
+            if (crs instanceof org.opengis.referencing.crs.GeographicCRS) {
+                /* Spec 9.5.1.1
+                Note that sometimes (e.g. for numerical model data) the exact CRS
+                may not be known or may be undefined. In this case the "id" may
+                be omitted, but the "type" still indicates that this is a geographic CRS.
+                Therefore clients can still use geodetic longitude, geodetic latitude
+                (and maybe height) axes, even if they cannot accurately georeference the information.
+                */
+                return null;
+            }
+            throw new DataStoreException("Could not find EPSG code for CRS " + crs);
+        }
         return "http://www.opengis.net/def/crs/EPSG/0/" + code;
     }
 }

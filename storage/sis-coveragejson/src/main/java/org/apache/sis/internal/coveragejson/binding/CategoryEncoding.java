@@ -16,6 +16,19 @@
  */
 package org.apache.sis.internal.coveragejson.binding;
 
+import jakarta.json.bind.annotation.JsonbTypeDeserializer;
+import jakarta.json.bind.annotation.JsonbTypeSerializer;
+import jakarta.json.bind.serializer.DeserializationContext;
+import jakarta.json.bind.serializer.JsonbDeserializer;
+import jakarta.json.bind.serializer.JsonbSerializer;
+import jakarta.json.bind.serializer.SerializationContext;
+import jakarta.json.stream.JsonGenerator;
+import jakarta.json.stream.JsonParser;
+import java.lang.reflect.Type;
+import java.util.Map;
+import org.apache.sis.internal.coveragejson.binding.CategoryEncoding.Deserializer;
+import org.apache.sis.internal.coveragejson.binding.CategoryEncoding.Serializer;
+
 
 /**
  * CategoryEncoding is an object where each key is equal to an "id" value of
@@ -26,6 +39,37 @@ package org.apache.sis.internal.coveragejson.binding;
  *
  * @author Johann Sorel (Geomatys)
  */
-public final class CategoryEncoding extends Dictionary<String> {
+@JsonbTypeDeserializer(Deserializer.class)
+@JsonbTypeSerializer(Serializer.class)
+public final class CategoryEncoding extends Dictionary<Object> {
 
+    public static class Deserializer implements JsonbDeserializer<CategoryEncoding> {
+        @Override
+        public CategoryEncoding deserialize(JsonParser parser, DeserializationContext ctx, Type rtType) {
+            final CategoryEncoding candidate = new CategoryEncoding();
+            while (parser.hasNext()) {
+                final JsonParser.Event event = parser.next();
+                if (event == JsonParser.Event.KEY_NAME) {
+                    // Deserialize inner object
+                    final String name = parser.getString();
+                    String value = ctx.deserialize(String.class, parser);
+                    candidate.setAnyProperty(name, value);
+                }
+            }
+            return candidate;
+        }
+    }
+
+    public static class Serializer implements JsonbSerializer<CategoryEncoding> {
+
+        @Override
+        public void serialize(CategoryEncoding ranges, JsonGenerator jg, SerializationContext sc) {
+            jg.writeStartObject();
+            for (Map.Entry<String,Object> entry : ranges.any.entrySet()) {
+                sc.serialize(entry.getKey(), entry.getValue(), jg);
+            }
+            jg.writeEnd();
+        }
+
+    }
 }

@@ -700,6 +700,9 @@ public final class CoverageResource extends AbstractGridCoverageResource {
     }
 
     private static String toURI(CoordinateReferenceSystem crs) throws FactoryException, DataStoreException {
+        String urn = IdentifiedObjects.lookupURN(crs, null);
+        if (urn != null && !urn.isBlank()) return urn;
+
         final Integer code = IdentifiedObjects.lookupEPSG(crs);
         if (code == null) {
             if (crs instanceof org.opengis.referencing.crs.GeographicCRS) {
